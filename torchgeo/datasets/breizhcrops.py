@@ -7,9 +7,11 @@ import os
 from collections.abc import Callable, Sequence
 from typing import ClassVar, Literal
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from matplotlib.figure import Figure
 
 from .errors import DatasetNotFoundError
 from .geo import NonGeoDataset
@@ -29,6 +31,7 @@ class BreizhCrops(NonGeoDataset):
     * 13 Sentinel-2 L1C or 10 Sentinel-2 L2A reflectance bands
     * 9 crop-type classes
     * spatially disjoint train, validation, and test splits
+    * This implementation only supports the year 2017.
 
     Dataset format:
 
@@ -63,11 +66,7 @@ class BreizhCrops(NonGeoDataset):
     class_mapping_url = f'{base_url}/classmapping.csv'
 
     classes = ('barley', 'wheat', 'rapeseed', 'corn', 'sunflower') + (
-        'orchards',
-        'nuts',
-        'permanent meadows',
-        'temporary meadows',
-    )
+        'orchards', 'nuts', 'permanent meadows', 'temporary meadows',)
 
     # matches the split in the paper
     split_regions: ClassVar[dict[str, tuple[str, ...]]] = {
@@ -118,7 +117,6 @@ class BreizhCrops(NonGeoDataset):
         bands: Sequence[str] | None = None,
         transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
-        checksum: bool = True,
     ) -> None:
         """Initialize a new BreizhCrops dataset instance.
 
@@ -133,8 +131,6 @@ class BreizhCrops(NonGeoDataset):
             transforms: A function/transform that takes a sample dictionary and
                 returns a transformed version.
             download: If True, download the dataset and store it in ``root``.
-            checksum: If True, verify extracted HDF5 files using their published
-                file sizes.
 
         Raises:
             ValueError: If ``split``, ``level``, or ``bands`` is invalid.
@@ -172,9 +168,9 @@ class BreizhCrops(NonGeoDataset):
         self.bands = bands
         self.transforms = transforms
         self.download = download
-        self.checksum = checksum
         self.regions = self.split_regions[split]
         self.band_indices = [self.h5_bands[level].index(band) for band in self.bands]
+        self.date_index = self.h5_bands[level].index('doa')
 
         self._verify()
         self.files = self._load_files()
@@ -186,7 +182,8 @@ class BreizhCrops(NonGeoDataset):
             index: Index of the sample to return.
 
         Returns:
-            A sample containing the image time series, label, and field ID.
+            A sample containing the image time series, acquisition dates, label,
+            and field ID.
 
         """
         row = self.files.iloc[index]
@@ -196,8 +193,10 @@ class BreizhCrops(NonGeoDataset):
             array = np.asarray(file[row['h5_key']])
 
         image = torch.from_numpy(array[:, self.band_indices]).float()
+        dates = torch.from_numpy(array[:, self.date_index]).long()
         sample = {
             'image': image,
+            'dates': dates,
             'label': torch.tensor(row['label'], dtype=torch.long),
             'field_id': torch.tensor(row['field_id'], dtype=torch.long),
         }
@@ -245,9 +244,7 @@ class BreizhCrops(NonGeoDataset):
         )
 
         if files_exist:
-            files_valid = not self.checksum or all(
-                self._h5_is_valid(region) for region in self.regions
-            )
+            files_valid = all(self._h5_is_valid(region) for region in self.regions)
             if files_valid:
                 return
 
@@ -269,6 +266,8 @@ class BreizhCrops(NonGeoDataset):
             extract_archive(
                 os.path.join(directory, archive), directory, remove_finished=True
             )
+            if not self._h5_is_valid(region):
+                raise RuntimeError('Download corruped, file size mismatch.')
 
     def _h5_is_valid(self, region: str) -> bool:
         """Check a regional HDF5 file against its published file size."""
@@ -300,3 +299,31 @@ class BreizhCrops(NonGeoDataset):
     def _h5_url(self, region: str) -> str:
         """Return the URL of a regional HDF5 archive."""
         return f'{self.base_url}/{self.year}/{self.level}/{region}.h5.tar.gz'
+
+    def plot(self, sample: Sample, suptitle: str | None = None) -> Figure:
+        """Plot a parcel time series.
+
+        Args:
+            sample: A sample returned by :meth:`__getitem__`.
+            suptitle: Optional string to use as a suptitle.
+
+        Returns:
+            A matplotlib Figure with each selected band plotted over time.
+
+        """
+        dates = pd.to_datetime(sample['dates'].numpy())
+        image = sample['image'].numpy()
+        label = sample['label'].item()
+        field_id = sample['field_id'].item()
+
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.plot(dates, image, '*-')
+        ax.legend(self.bands, ncol=max(1, len(self.bands) // 3))
+        ax.set_xlabel('Date of acquisition')
+        ax.set_ylabel('Mean reflectance')
+        ax.set_title(f'{self.level}: {self.classes[label]} (field ID: {field_id})')
+
+        if suptitle is not None:
+            plt.suptitle(suptitle)
+
+        return fig
