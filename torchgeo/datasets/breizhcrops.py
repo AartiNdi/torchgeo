@@ -66,7 +66,11 @@ class BreizhCrops(NonGeoDataset):
     class_mapping_url = f'{base_url}/classmapping.csv'
 
     classes = ('barley', 'wheat', 'rapeseed', 'corn', 'sunflower') + (
-        'orchards', 'nuts', 'permanent meadows', 'temporary meadows',)
+        'orchards',
+        'nuts',
+        'permanent meadows',
+        'temporary meadows',
+    )
 
     # matches the split in the paper
     split_regions: ClassVar[dict[str, tuple[str, ...]]] = {
@@ -222,15 +226,18 @@ class BreizhCrops(NonGeoDataset):
             Metadata for every parcel in the selected split.
 
         """
+        mapping = pd.read_csv(self._class_mapping_path(), index_col='code')['id']
         indexes = []
 
         for region in self.regions:
             index = pd.read_csv(self._index_path(region))
+            index = index[index['CODE_CULTU'].isin(mapping.index)].copy()
+            index['label'] = index['CODE_CULTU'].map(mapping).astype(int)
             index['region'] = region
             indexes.append(
-                index.rename(
-                    columns={'path': 'h5_key', 'id': 'field_id', 'classid': 'label'}
-                )[['region', 'h5_key', 'field_id', 'label', 'sequencelength']]
+                index.rename(columns={'path': 'h5_key', 'id': 'field_id'})[
+                    ['region', 'h5_key', 'field_id', 'label', 'sequencelength']
+                ]
             )
 
         return pd.concat(indexes, ignore_index=True)
@@ -266,14 +273,16 @@ class BreizhCrops(NonGeoDataset):
             extract_archive(
                 os.path.join(directory, archive), directory, remove_finished=True
             )
+
             if not self._h5_is_valid(region):
-                raise RuntimeError('Download corruped, file size mismatch.')
+                raise RuntimeError('Download corrupted, file size mismatch.')
 
     def _h5_is_valid(self, region: str) -> bool:
         """Check a regional HDF5 file against its published file size."""
+        path = self._h5_path(region)
         return (
-            os.path.getsize(self._h5_path(region))
-            == self.file_sizes[self.level][region]
+            os.path.exists(path)
+            and os.path.getsize(path) == self.file_sizes[self.level][region]
         )
 
     def _data_directory(self) -> Path:
@@ -290,7 +299,20 @@ class BreizhCrops(NonGeoDataset):
 
     def _h5_path(self, region: str) -> Path:
         """Return the path to a regional HDF5 database."""
-        return os.path.join(self._data_directory(), f'{region}.h5')
+        path = os.path.join(self._data_directory(), f'{region}.h5')
+        if os.path.exists(path):
+            return path
+
+        return os.path.join(
+            self._data_directory(),
+            'data',
+            'BreizhCrops',
+            f'{self.level}_img',
+            'data',
+            str(self.year),
+            self.level,
+            f'{region}.h5',
+        )
 
     def _index_url(self, region: str) -> str:
         """Return the URL of a regional index."""
