@@ -141,6 +141,7 @@ class BreizhCrops(NonGeoDataset):
             DatasetNotFoundError: If the dataset is not found and ``download`` is
                 False.
             DependencyNotFoundError: If h5py is not installed.
+            RuntimeError: If a downloaded HDF5 file has an unexpected size.
 
         """
         lazy_import('h5py')
@@ -253,6 +254,7 @@ class BreizhCrops(NonGeoDataset):
         if files_exist:
             files_valid = all(self._h5_is_valid(region) for region in self.regions)
             if files_valid:
+                print('Files already downloaded and verified')
                 return
 
         if not self.download:
@@ -274,8 +276,10 @@ class BreizhCrops(NonGeoDataset):
                 os.path.join(directory, archive), directory, remove_finished=True
             )
 
-            if not self._h5_is_valid(region):
-                raise RuntimeError('Download corrupted, file size mismatch.')
+            if self._h5_is_valid(region):
+                print(f'{region}.h5 downloaded and verified')
+            else:
+                raise RuntimeError(f'{region}.h5 is corrupted: file size mismatch.')
 
     def _h5_is_valid(self, region: str) -> bool:
         """Check a regional HDF5 file against its published file size."""
